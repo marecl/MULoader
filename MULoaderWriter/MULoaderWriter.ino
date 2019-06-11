@@ -3,15 +3,16 @@
 
 MFRC522 rfid(10, 9);
 
-byte prog[] = {0xE0, 0x01, 0xB9, 0x07, 0xB9, 0x08, 0xCF, 0xFF
+/* Maybe load from serial? */
+byte prog[] = {0x01, 0xE0, 0x07, 0x07, 0x08, 0xB9, 0xFE, 0xCF,
               };
 
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(2000000);
   SPI.begin();
   rfid.PCD_Init();
   rfid.PCD_DumpVersionToSerial();
-  Serial.println("Ready to write some shit");
+  Serial.println(F("Ready to write some shit"));
   Serial.flush();
 }
 
@@ -25,7 +26,6 @@ void loop() {
   if (!rfid.PICC_ReadCardSerial())
     return;
 
-
   Serial.print(F("Card UID:"));    //Dump UID
   for (byte i = 0; i < rfid.uid.size; i++) {
     Serial.print(rfid.uid.uidByte[i] < 0x10 ? " 0" : " ");
@@ -38,12 +38,8 @@ void loop() {
   uint16_t s = sizeof(prog);
   uint8_t blocks = (s / 16);
   if (s % 16 != 0) blocks += 1;
-  Serial.print("Sketch size:\t\t");
-  Serial.println(s);
-  Serial.print("Total blocks:\t\t");
-  Serial.println(blocks);
-  if (blocks > 46) { //Excluding trailer,0 and 1 block
-    Serial.println("Sketch too big!");
+  if (blocks > 46) { //736 bytes per card
+    Serial.println(F("Parts not implemented yet!"));
     return;
   }
 
@@ -62,16 +58,42 @@ void loop() {
     }
 
     byte buffer[16];
-    memset(buffer, 0, 16);
+    memset(buffer, 0xFF, 16);
 
     if (block > 1) {
       for (uint8_t a = 0; a < (((s - (16 * offset)) > 16) ? 16 : ((s % 16) == 0 ? 16 : s % 16)); a++)
         buffer[a] = prog[(16 * offset) + a];
       offset++;
     } else if (block == 1) {
-      Serial.println("Writing sketch metadata");
-      buffer[0] = s & 0xFF;
-      buffer[1] = s >> 8;
+      Serial.println(F("Writing sketch metadata"));
+      /*
+          2 bytes - code size
+          1 byte - parts [token]
+          1 byte - full sectors (including not full)
+          1 byte - amount of data in last sector
+          1 byte - full blocks
+          1 byte - amount of data in last block
+      */
+      buffer[0] = s >> 8;
+      buffer[1] = s & 0xFF;
+      buffer[2] = s / 736 + (s % 736 != 0 ? 1 : 0);
+      buffer[3] = s / 256;
+      if (buffer[3] != 0 || s < 256) buffer[3] += 1;
+      buffer[4] = s % 256;
+      buffer[5] = s / 16 + (s % 16 != 0 ? 1 : 0);
+      buffer[6] = s % 16;
+      Serial.print(F("Sketch size:\t"));
+      Serial.print(s);
+      Serial.print(F(" bytes\r\nParts [tokens]:\t"));
+      Serial.println(buffer[2]);
+      Serial.print(F("Sectors total:\t"));
+      Serial.println(buffer[3]);
+      Serial.print(F("In last sector:\t"));
+      Serial.println(buffer[4]);
+      Serial.print(F("Blocks total:\t"));
+      Serial.println(buffer[5]);
+      Serial.print(F("In last block:\t"));
+      Serial.println(buffer[6]);
     }
 
     status = rfid.MIFARE_Write(block, buffer, 16);
@@ -84,7 +106,9 @@ void loop() {
     }
   }
 
-  Serial.println("Done!");
+  Serial.println(F("Done!"));
+  Serial.flush();
+  delay(100);
   rfid.PICC_DumpToSerial(&(rfid.uid));
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();  // Stop encryption on PCD
