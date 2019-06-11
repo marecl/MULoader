@@ -57,12 +57,12 @@ Reset circuit like this allowed to slim code a bit and as far as I see causes no
 
 Remember to uncomment define at the beginning of Reader code, otherwise you won't see anything :)
 
-#### What works
+### What works
 * Uploading to tag (one)
 * Reading from tag
 * I know how to use SPM
 
-#### What doesn't work
+### What doesn't work
 * Serial upload to tag (because I didn't implement it yet)
 * Bootloading uC with MULoaderReader (too big and stuff)
 * Programming tags in parts of 736 bytes
