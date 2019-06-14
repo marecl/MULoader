@@ -1,8 +1,5 @@
 #ifndef RC522_h
 #define RC522_h
-#define __STDC_LIMIT_MACROS
-#include <stdint.h>
-#include <Arduino.h>
 #include <SPI.h>
 #ifndef RC522_SPICLOCK
 #define RC522_SPICLOCK SPI_CLOCK_DIV4
@@ -10,9 +7,6 @@
 
 class RC522 {
   public:
-    //static constexpr byte FIFO_SIZE = 64;
-    //static constexpr uint8_t UNUSED_PIN = UINT8_MAX;
-
     enum PCD_Register : byte {
       CommandReg = 0x01 << 1,
       ComIEnReg = 0x02 << 1,

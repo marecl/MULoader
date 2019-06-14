@@ -1,0 +1,7 @@
+compiler.c.extra_flags=-Xlinker .text=0x7000
+compiler.c.elf.extra_flags=-Ttext 0x7000 
+compiler.S.extra_flags=-Xlinker .text=0x7000
+compiler.cpp.extra_flags=-Xlinker .text=0x7000
+compiler.ar.extra_flags=
+compiler.objcopy.eep.extra_flags=
+compiler.elf2hex.extra_flags=

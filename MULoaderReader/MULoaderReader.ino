@@ -1,29 +1,35 @@
 #include <SPI.h>
 #include "RC522.h"
+#include <Arduino.h>
 #include <avr/boot.h>
 
-/* Move this to AVR Studio */
-
-#define S_DEBUG
+/* 3760 bytes free after removing serial */
+/* Compared with 5624 bytes it's a huge difference */
+//#define S_DEBUG
 
 void setup() {
-  RC522 rfid(10);
+  cli();
+  pinMode(A1, OUTPUT);
+  digitalWrite(A1, HIGH);
   SPI.begin();
-#ifdef S_DEBUG
-  Serial.begin(2000000);
-  Serial.println(F("MostUseless Bootloader Reader"));
-#endif
+  RC522 rfid(10);
   rfid.PCD_Init();
 
-  RC522::MIFARE_Key key;
-  memset(key.keyByte, 0xFF, 6);
-
+#ifdef S_DEBUG
+  Serial.begin(115200);
+  Serial.println(F("MostUseless Bootloader Reader"));
+#endif
 
   /* Jump to code after timeout */
-  while (millis() < 10000 && !rfid.PICC_IsNewCardPresent());
-  if (millis() > 10000) asm("jmp 0x0000");
-
+  /* Timeout doesn't work but lol, the rest of stuff works */
+  while (millis() < 1000 && !rfid.PICC_IsNewCardPresent());
+  if (millis() >= 1000) {
+    digitalWrite(A1, LOW);
+    asm("jmp 0");
+  }
   while (!rfid.PICC_ReadCardSerial());
+
+  digitalWrite(A1, LOW);
 
   /* Sketch metadata */
   uint16_t siz = 0;
@@ -38,15 +44,19 @@ void setup() {
   uint8_t memptr = 0;
 
   /*
-      We don't need to worry about extra data in last
-      page if we already set buffer as empty :)
+    We don't need to worry about extra data in last
+    page if we already set buffer as empty :)
   */
-  uint8_t pageBuffer[256];
+  volatile static uint8_t pageBuffer[256];
   memset(pageBuffer, 0xFF, 256);
 
+  /* Generic key */
+  RC522::MIFARE_Key key;
+  memset(key.keyByte, 0xFF, 6);
+
   /*
-      Reading every block and using page offset
-      to save progress if more parts are needed
+    Reading every block and using page offset
+    to save progress if more parts are needed
   */
 
   for (uint8_t block = 1; block < blocks; block++) {
@@ -56,18 +66,18 @@ void setup() {
     }
 
     uint8_t buffer[18];
-    const byte len = 18;
+    byte len = 18;
 
     rfid.PCD_Authenticate(RC522::PICC_CMD_MF_AUTH_KEY_A, block, &key, &(rfid.uid));
     rfid.MIFARE_Read(block, buffer, &len);
 
     /*
-        2 bytes - code size
-        1 byte - parts [token]
-        1 byte - full pages (including not full)
-        1 byte - amount of data in last page
-        1 byte - full blocks
-        1 byte - amount of data in last block
+      2 bytes - code size
+      1 byte - parts [token]
+      1 byte - full pages (including not full)
+      1 byte - amount of data in last page
+      1 byte - full blocks
+      1 byte - amount of data in last block
     */
     if (block == 1) {
       siz = word(buffer[0], buffer[1]);
@@ -117,18 +127,48 @@ void setup() {
 #endif
 
     /* Write each page to flash */
-    /* 3888 bytes free after removing serial */
-
-
+    digitalWrite(A1, HIGH);
+    boot_program_page(memptr, pageBuffer);
 
     /* Finished writing to flash */
-    memptr++;
+    memptr += 256;
     memset(pageBuffer, 0xFF, 256);
   }
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1(); // Stop encryption on PCD
+  rfid.PCD_AntennaOff();
 
-  asm("jmp 0x0000");
+  digitalWrite(A1, LOW);
+  asm("jmp 0");
+}
+
+void boot_program_page(uint32_t page, uint8_t *buf) {
+  uint16_t i;
+  uint8_t sreg;
+
+  sreg = SREG;
+  cli();
+
+  eeprom_busy_wait();
+
+  boot_page_erase(page);
+  boot_spm_busy_wait();
+  for (i = 0; i < SPM_PAGESIZE; i += 2)
+  {
+    uint16_t w = *buf++;
+    w += (*buf++) << 8;
+    boot_page_fill(page + i, w);
+  }
+
+  boot_page_write(page); // Store buffer in flash page.
+  boot_spm_busy_wait(); // Wait until the memory is written.
+
+  // Reenable RWW-section again. We need this if we want to jump back
+  // to the application after bootloading.
+  boot_rww_enable();
+
+  // Re-enable interrupts (if they were ever enabled).
+  SREG = sreg;
 }
 
 void loop() {
