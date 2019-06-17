@@ -16,7 +16,6 @@ These tags have special memory blocks, that define access conditions to whole se
 (block = 16 bytes, sector = 4 blocks).  
 It's not end yet, block #0 is *NOT* meant for data storage, so all in all, instead of 1k (64 blocks * 16 bytes) we get 47 blocks (752 bytes).  
 During development I decided to take away one more block for sketch metadata (number of parts, code size etc) so we end up with 736 bytes of storage available per 1k tag (also it makes code a bit smaller, yay!).  
-Luckily this is only for the first tag, the rest of tags will probably be able to store 752 bytes **(whole 16 bytes more)**.
 
 Full 28672 byte code (in the worst case) will take up to 40 tags. Don't forget, that they will have to be scanned in specific order or your uC will crash at some point.  
 I don't know why, but millis() is not working, but I cannot override them, because they're already defined ¯\_(ツ)_/¯
@@ -40,8 +39,8 @@ N/A
 Fuse bits:
 * Low: 0xFF
 * High: 0xD8
-* Extended: FD
-* Lock: 3F
+* Extended: 0xFD
+* Lock: 0x3F
 
 |Arduino|MFRC522|
 |-------|-------|
@@ -68,6 +67,13 @@ Test code lights up LED on A0.
 
 Remember to uncomment define at the beginning of Reader code, otherwise you won't see anything :)
 
+### Tag memory layout (MIFARE 1K)
+Every tag will have 46 blocks available. It makes programming easier (fixed amount of blocks) and leaves 1 block for metadata.  
+First tag: part number, code size, amount of blocks and pages and parts.  
+Every next tag: part number only.  
+
+In this way I can implement verification, if correct tag is being read or programmed.
+
 ### What works
 * Uploading to tag (one)
 * Reading from tag
@@ -77,3 +83,4 @@ Remember to uncomment define at the beginning of Reader code, otherwise you won'
 * Serial upload to tag (because I didn't implement it yet)
 * Programming tags in parts of 736 bytes
 * Bootloader timeout
+* Tags other than Mifare Classic 1K
