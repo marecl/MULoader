@@ -75,12 +75,12 @@ Every next tag: part number only.
 In this way I can implement verification, if correct tag is being read or programmed.
 
 ### What works
-* Uploading to tag (one)
+* Uploading code manually to tags
 * Reading from tag
 * Updating flash
 
 ### What doesn't work
-* Serial upload to tag (because I didn't implement it yet)
 * Programming tags in parts of 736 bytes
 * Bootloader timeout
 * Tags other than Mifare Classic 1K
+* PC client software

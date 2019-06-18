@@ -50,7 +50,8 @@ enum Codes : char {
   BUFFER_ERROR,       //Info from PC
   BUFFER_REPEAT,      //Request to PC
   BUFFER_WAITING,     //Info to PC
-  ALL_DONE            //Info to PC
+  ALL_DONE,           //Info to PC
+  INIT_OK             //Info to PC
 };
 
 struct _meta {
@@ -65,6 +66,7 @@ uint8_t len = 18;
 uint32_t bytesWritten;
 uint32_t toWrite;
 
+void setup() {
   Serial.begin(115200);
   SPI.begin();
   Wire.begin();
@@ -73,10 +75,12 @@ uint32_t toWrite;
   display.setTextSize(1);
   display.setTextColor(WHITE, BLACK);
   display.setCursor(0, 0);
+  display.println("Begin");
   display.display();
   rfid.PCD_Init();
   for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
 
+  Serial.write(INIT_OK);
   while (Serial.read() != CODE_META);
   uint16_t size = Serial.parseInt();
 
@@ -153,6 +157,7 @@ void loop() {
       if (status != MFRC522::STATUS_OK)
         Serial.write(TAG_ERROR_WRITE);
       else Serial.write(TAG_OK);
+      display.display();
 
       /* Read block from tag and verify against buffer */
       tries = 0;
@@ -166,7 +171,6 @@ void loop() {
           }
           if (x == 15) tries = -1;
         }
-        Serial.println("XDDDD");
       } while (tries < 5 && tries != -1);
       if (status != MFRC522::STATUS_OK)
         Serial.write(TAG_ERROR_READ);
@@ -180,7 +184,7 @@ void loop() {
       if (bytesWritten >= toWrite) break;
 
       /* Send info we're waiting for code */
-      Serial.write(BUFFER_WAITING);
+      Serial.println(BUFFER_WAITING);
       /* Wait for new transmission */
       do {
         while (Serial.read() != CODE_BEGIN);
