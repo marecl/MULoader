@@ -5,30 +5,6 @@
 #include <Adafruit_SSD1306.h>
 
 MFRC522 rfid(10, 9);
-
-/*
-  1. Get code size
-  2. Write code to all tags from block #2 (736 bytes)
-    2.1. Get tag size (in blocks), report it to pc
-    2.2. Write part number in sector #1
-    2.3. Fill buffer (16 bytes)
-    2.4. Send buffer to pc (verify)
-    2.5. Write buffer to tag
-    2.6. Read last written block and verify against buffer
-    2.7. Request more data to buffer or next tag
-  3. Write metadata to tag 1
-    3.1. Discard part number on tag 1
-    3.2. Code size, blocks, pages, number of parts
-
-  No checksums, programmer will aggresively verify everything
-
-  TODO:
-  add verification of written blocks (TAG_OK/TAG_ERROR)
-  Verify parts are working
-  Remove display code after testing
-  Update reader to new metadata format (and part system)
-*/
-
 Adafruit_SSD1306 display(128, 64, &Wire);
 MFRC522::MIFARE_Key key;
 MFRC522::StatusCode status;
@@ -46,6 +22,7 @@ enum Codes : char {
   TAG_WAITING,        //Info to PC
   TAG_FIRST,          //Request to PC
   TAG_NOT_FIRST,      //Info to PC
+  TAG_UPDATING_META,  //Info to PC
   BUFFER_OK,          //Info from PC
   BUFFER_ERROR,       //Info from PC
   BUFFER_REPEAT,      //Request to PC
@@ -70,6 +47,8 @@ void setup() {
   Serial.begin(115200);
   SPI.begin();
   Wire.begin();
+  rfid.PCD_Init();
+  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
   display.clearDisplay();
   display.setTextSize(1);
@@ -77,8 +56,6 @@ void setup() {
   display.setCursor(0, 0);
   display.println("Begin");
   display.display();
-  rfid.PCD_Init();
-  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
 
   Serial.write(INIT_OK);
   while (Serial.read() != CODE_META);
@@ -113,6 +90,13 @@ void loop() {
 
   do {
     display.display();
+
+    /* Send info we're waiting for next tag */
+    if (bytesWritten < toWrite) {
+      Serial.write(TAG_WAITING);
+      while (Serial.read() != TAG_NEXT);
+    }
+
     while (!rfid.PICC_IsNewCardPresent());
     while (!rfid.PICC_ReadCardSerial());
 
@@ -129,6 +113,7 @@ void loop() {
       case MFRC522::PICC_TYPE_MIFARE_4K:
       case MFRC522::PICC_TYPE_MIFARE_MINI: //I dare you to use this one
         rfid.PICC_DumpDetailsToSerial(&(rfid.uid));
+        capacity = 0;
       default: display.println("Not supported"); continue;
       case MFRC522::PICC_TYPE_MIFARE_1K: capacity = 736; break;
     }
@@ -144,8 +129,33 @@ void loop() {
     for (uint16_t a = 1; a < 64; a++) {
       if ((a + 1) % 4 == 0)
         continue; //Skip trailers
-      if (a == 1)
+      if (a != 1) {
+        /* Wait for new transmission */
+        do {
+          /* Send info we're waiting for code */
+          Serial.write(BUFFER_WAITING);
+          while (Serial.read() != CODE_BEGIN);
+
+          /* Read into buffer */
+          while (Serial.available() < 16); //Wait for buffer to fill
+          for (uint8_t b = 0; b < 16; b++)
+            buffer[b] = Serial.read();
+
+          while (Serial.available())Serial.read(); //Discard leftovers
+          Serial.write(BUFFER_OK);
+
+          /* Send buffer to pc */
+          for (uint8_t b = 0; b < 16; b++)
+            Serial.write(buffer[b]);
+
+          /* Wait for confirmation */
+          while (!Serial.available());
+        } while (Serial.read() == BUFFER_ERROR
+                 && Serial.peek() != BUFFER_OK);
+      } else {
+        Serial.write(TAG_UPDATING_META);
         buffer[0] = currentPart;
+      }
 
       /* Write awaiting data to tag */
       int8_t tries = 0;
@@ -182,35 +192,11 @@ void loop() {
       if (a != 1) bytesWritten += 16;
       memset(buffer, 0xFF, 16);
       if (bytesWritten >= toWrite) break;
-
-      /* Send info we're waiting for code */
-      Serial.println(BUFFER_WAITING);
-      /* Wait for new transmission */
-      do {
-        while (Serial.read() != CODE_BEGIN);
-        /* Read into buffer */
-        while (Serial.available() < 16); //Wait for buffer to fill
-        for (uint8_t b = 0; b < 16; b++)
-          buffer[b] = Serial.read();
-        while (Serial.available())Serial.read(); //Discard leftovers
-
-        /* Send buffer to pc */
-        for (uint8_t b = 0; b < 16; b++)
-          Serial.write(buffer[b]);
-
-        /* Wait for confirmation */
-        while (!Serial.available());
-      } while (Serial.read() == BUFFER_ERROR);
-
     }
     currentPart++;
 
     rfid.PICC_HaltA();
-    /* Send info we're waiting for next tag */
-    if (bytesWritten < toWrite) {
-      Serial.write(TAG_WAITING);
-      while (Serial.read() != TAG_NEXT);
-    }
+    rfid.PCD_StopCrypto1();
   } while (bytesWritten < toWrite);
 
   display.clearDisplay();
@@ -235,9 +221,10 @@ void loop() {
     rfid.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &key, &(rfid.uid));
     rfid.MIFARE_Read(1, buffer, &len);
     if (buffer[0] != 1) {
-      Serial.write(TAG_NOT_FIRST);
       rfid.PICC_HaltA();
-    }
+      rfid.PCD_StopCrypto1();
+      Serial.write(TAG_NOT_FIRST);
+    } else Serial.write(TAG_OK);
   } while (buffer[0] != 1);
 
   /* Write metadata to first block */
@@ -250,10 +237,16 @@ void loop() {
   buffer[5] = meta.pages;
   buffer[6] = meta.parts;
 
+  /*
+    I forgot about checking this one
+    Well, if it can be programmed and read twice,
+    then there is no need for verification again
+    ¯\_(ツ)_/¯
+  */
   rfid.MIFARE_Write(1, buffer, 16);
-  rfid.PICC_HaltA();
 
   /* We're done here */
+  rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
   Serial.write(ALL_DONE);
   display.println("Done!");
