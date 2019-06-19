@@ -1,11 +1,7 @@
 #include <SPI.h>
 #include <MFRC522.h>
-#include <Wire.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
 
 MFRC522 rfid(10, 9);
-Adafruit_SSD1306 display(128, 64, &Wire);
 MFRC522::MIFARE_Key key;
 MFRC522::StatusCode status;
 
@@ -46,16 +42,8 @@ uint32_t toWrite;
 void setup() {
   Serial.begin(115200);
   SPI.begin();
-  Wire.begin();
   rfid.PCD_Init();
   for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
-  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
-  display.clearDisplay();
-  display.setTextSize(1);
-  display.setTextColor(WHITE, BLACK);
-  display.setCursor(0, 0);
-  display.println("Begin");
-  display.display();
 
   Serial.write(INIT_OK);
   while (Serial.read() != CODE_META);
@@ -75,13 +63,6 @@ void setup() {
   if (size % 256 != 0) meta.pages++;
   meta.blocks = size / 16;
   if (size % 16 != 0) meta.blocks++;
-
-  display.print("Code size: ");
-  display.println(meta.size);
-  display.print("Pages: ");
-  display.println(meta.pages);
-  display.print("Blocks: ");
-  display.println(meta.blocks);
 }
 
 void loop() {
@@ -89,8 +70,6 @@ void loop() {
   uint16_t capacity = 0;
 
   do {
-    display.display();
-
     /* Send info we're waiting for next tag */
     if (bytesWritten < toWrite) {
       Serial.write(TAG_WAITING);
@@ -102,8 +81,6 @@ void loop() {
 
     /* Get card type */
     MFRC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
-    display.println(rfid.PICC_GetTypeName(piccType));
-    display.display();
 
     /* Get space available */
     switch (piccType) {
@@ -114,10 +91,9 @@ void loop() {
       case MFRC522::PICC_TYPE_MIFARE_MINI: //I dare you to use this one
         rfid.PICC_DumpDetailsToSerial(&(rfid.uid));
         capacity = 0;
-      default: display.println("Not supported"); continue;
+      default: continue;
       case MFRC522::PICC_TYPE_MIFARE_1K: capacity = 736; break;
     }
-    display.display();
 
     /* Send tag UID and type to pc (text) */
     rfid.PICC_DumpDetailsToSerial(&(rfid.uid));
@@ -167,7 +143,6 @@ void loop() {
       if (status != MFRC522::STATUS_OK)
         Serial.write(TAG_ERROR_WRITE);
       else Serial.write(TAG_OK);
-      display.display();
 
       /* Read block from tag and verify against buffer */
       tries = 0;
@@ -199,15 +174,7 @@ void loop() {
     rfid.PCD_StopCrypto1();
   } while (bytesWritten < toWrite);
 
-  display.clearDisplay();
-  display.setCursor(0, 0);
-  display.print("Written: ");
-  display.println(bytesWritten);
-
   meta.parts = currentPart - 1;
-  display.print("Parts: ");
-  display.println(meta.parts);
-  display.display();
 
   /* Check if card is part 1 */
   do {
@@ -249,7 +216,5 @@ void loop() {
   rfid.PICC_HaltA();
   rfid.PCD_StopCrypto1();
   Serial.write(ALL_DONE);
-  display.println("Done!");
-  display.display();
   while (true);
 }

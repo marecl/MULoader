@@ -95,7 +95,10 @@ while True:
 			pass
 
 	tokencap = int(ser.readline(), 10)
-	print 'Token capacity: %d bytes' % tokencap
+	if tokencap == 0:
+		print "Not supported"
+		continue
+	else: print 'Token capacity: %d bytes' % tokencap
 
 	while True:
 		retcode = ser.read(1)
