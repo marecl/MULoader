@@ -3,6 +3,8 @@
 #include <Arduino.h>
 #include <avr/boot.h>
 
+void __attribute__((noinline)) watchdogConfig(uint8_t x);
+
 /* 3760 bytes free after removing serial */
 /* Compared with 5624 bytes it's a huge difference */
 //#define S_DEBUG
@@ -11,22 +13,43 @@ void setup() {
   cli();
   pinMode(A1, OUTPUT);
   digitalWrite(A1, HIGH);
+#ifdef S_DEBUG
+  Serial.begin(115200);
+  Serial.println(F("MostUseless Bootloader Reader"));
+  Serial.flush();
+#endif
+  uint8_t ch;
+  ch = MCUSR;
+  if (ch != 0) {
+    if ((ch & (_BV(WDRF) | _BV(EXTRF))) != _BV(EXTRF)) {
+      if (ch & _BV(EXTRF))
+        MCUSR = ~(_BV(WDRF));
+
+#ifdef S_DEBUG
+      Serial.println("Ext reset");
+      Serial.flush();
+#endif
+
+      watchdogConfig(0);
+      digitalWrite(A1, LOW);
+      asm("jmp 0");
+    }
+  }
+#ifdef S_DEBUG
+  Serial.println("Entering bootloader");
+  Serial.flush();
+#endif
+
   SPI.begin();
   RC522 rfid(10);
   rfid.PCD_Init();
 
-#ifdef S_DEBUG
-  Serial.begin(115200);
-  Serial.println(F("MostUseless Bootloader Reader"));
-#endif
+  /* You have 2 seconds to scan first tag */
+  watchdogConfig((_BV(WDP2) | _BV(WDP1) | _BV(WDP0) | _BV(WDE)));
 
   /* Jump to code after timeout */
   /* Timeout doesn't work but lol, the rest of stuff works */
-  while (millis() < 1000 && !rfid.PICC_IsNewCardPresent());
-  if (millis() >= 1000) {
-    digitalWrite(A1, LOW);
-    asm("jmp 0");
-  }
+  while (!rfid.PICC_IsNewCardPresent());
   while (!rfid.PICC_ReadCardSerial());
 
   digitalWrite(A1, LOW);
@@ -35,9 +58,7 @@ void setup() {
   uint16_t siz = 0;
   uint8_t parts = 0;
   uint8_t pages = 0;
-  uint8_t pageExtra = 0;
   uint8_t blocks = 2;
-  uint8_t blockExtra = 0;
 
   /* Buffer and SPM stuff */
   uint8_t pageoffset = 0;
@@ -80,12 +101,10 @@ void setup() {
       1 byte - amount of data in last block
     */
     if (block == 1) {
-      siz = word(buffer[0], buffer[1]);
-      parts = buffer[2];
-      pages = buffer[3];
-      pageExtra = buffer[4];
-      blocks = buffer[5] + 2;
-      blockExtra = buffer[6];
+      siz = word(buffer[1], buffer[2]);
+      blocks = word(buffer[3], buffer[4]) + 2;
+      pages = buffer[5];
+      parts = buffer[6];
 #ifdef S_DEBUG
       Serial.print(F("Sketch size:\t"));
       Serial.print(siz);
@@ -93,14 +112,9 @@ void setup() {
       Serial.println(parts);
       Serial.print(F("Pages total:\t"));
       Serial.println(pages);
-      Serial.print(F("In last page:\t"));
-      Serial.print(pageExtra);
-      Serial.println(F(" bytes"));
       Serial.print(F("Blocks total:\t"));
       Serial.println(blocks - 2);
-      Serial.print(F("In last block:\t"));
-      Serial.print(blockExtra);
-      Serial.println(F(" bytes"));
+      Serial.flush();
 #endif
       continue;
     }
@@ -124,6 +138,7 @@ void setup() {
       if (x % 16 == 0)
         Serial.println();
     }
+    Serial.flush();
 #endif
 
     /* Write each page to flash */
@@ -139,7 +154,8 @@ void setup() {
   rfid.PCD_AntennaOff();
 
   digitalWrite(A1, LOW);
-  asm("jmp 0");
+  watchdogConfig(_BV(WDE)); //16ms
+  while (1); //Trigger watchdog to jump to code
 }
 
 void boot_program_page(uint32_t page, uint8_t *buf) {
@@ -169,6 +185,11 @@ void boot_program_page(uint32_t page, uint8_t *buf) {
 
   // Re-enable interrupts (if they were ever enabled).
   SREG = sreg;
+}
+
+void watchdogConfig(uint8_t x) {
+  WDTCSR = _BV(WDCE) | _BV(WDE);
+  WDTCSR = x;
 }
 
 void loop() {
