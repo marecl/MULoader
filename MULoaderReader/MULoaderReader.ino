@@ -1,18 +1,21 @@
-#include <SPI.h>
-#include "RC522.h"
-#include <Arduino.h>
+#include <avr/io.h>
 #include <avr/boot.h>
+#include "RC522.h"
 
-void __attribute__((noinline)) watchdogConfig(uint8_t x);
+/* Moving to Atmel Studio? */
 
-/* 3760 bytes free after removing serial */
-/* Compared with 5624 bytes it's a huge difference */
+void boot_program_page(uint32_t, uint8_t*);
+void __attribute__((noinline)) watchdogConfig(uint8_t);
+void initSPI();
+
+/* 3820 bytes free after removing serial */
+/* Compared with 5714 bytes it's a huge difference */
 //#define S_DEBUG
 
 void setup() {
   cli();
-  pinMode(A1, OUTPUT);
-  digitalWrite(A1, HIGH);
+  DDRC |= 0b00000010;
+  PORTC |= 0b00000010;
 #ifdef S_DEBUG
   Serial.begin(115200);
   Serial.println(F("MostUseless Bootloader Reader"));
@@ -31,7 +34,7 @@ void setup() {
 #endif
 
       watchdogConfig(0);
-      digitalWrite(A1, LOW);
+      PORTC &= !0b00000010;
       asm("jmp 0");
     }
   }
@@ -40,126 +43,163 @@ void setup() {
   Serial.flush();
 #endif
 
-  SPI.begin();
-  RC522 rfid(10);
+  initSPI();
+  RC522 rfid;
   rfid.PCD_Init();
-
-  /* You have 2 seconds to scan first tag */
-  watchdogConfig((_BV(WDP2) | _BV(WDP1) | _BV(WDP0) | _BV(WDE)));
-
-  /* Jump to code after timeout */
-  /* Timeout doesn't work but lol, the rest of stuff works */
-  while (!rfid.PICC_IsNewCardPresent());
-  while (!rfid.PICC_ReadCardSerial());
-
-  digitalWrite(A1, LOW);
-
-  /* Sketch metadata */
-  uint16_t siz = 0;
-  uint8_t parts = 0;
-  uint8_t pages = 0;
-  uint8_t blocks = 2;
-
-  /* Buffer and SPM stuff */
-  uint8_t pageoffset = 0;
-  uint8_t memptr = 0;
-
-  /*
-    We don't need to worry about extra data in last
-    page if we already set buffer as empty :)
-  */
-  volatile static uint8_t pageBuffer[256];
-  memset(pageBuffer, 0xFF, 256);
 
   /* Generic key */
   RC522::MIFARE_Key key;
-  memset(key.keyByte, 0xFF, 6);
+  memset(key.keyuint8_t, 0xFF, 6);
 
-  /*
-    Reading every block and using page offset
-    to save progress if more parts are needed
-  */
+  /* You have 2 seconds to scan first tag */
+  watchdogConfig(_BV(WDP2) | _BV(WDP1) | _BV(WDP0) | _BV(WDE));
 
-  for (uint8_t block = 1; block < blocks; block++) {
-    if ((block + 1) % 4 == 0) {
-      blocks++;
+  /* If the tag is not scanned, it will triger watchdog */
+  while (!rfid.PICC_IsNewCardPresent());
+  while (!rfid.PICC_ReadCardSerial());
+
+  /* Now you have 8 seconds between tags */
+  watchdogConfig(_BV(WDP3) | _BV(WDP0) | _BV(WDE));
+
+  PORTC &= !0b00000010;
+
+  /* Sketch metadata */
+  uint16_t siz = 0;
+  uint16_t blocks = 0;
+  uint8_t parts = 0;
+
+  /* Programming */
+  bool metaRead = false;
+  uint8_t currentPart = 0;
+  uint16_t blocksWritten = 0;
+  volatile static uint8_t buffer[18];
+  uint8_t len = 18;
+
+  /* Buffer and SPM stuff */
+  volatile static uint8_t writeBuffer[16];
+  uint16_t memptr = 0;
+
+  /* Token capacity (blocks) may vary */
+  uint16_t tokencap = 0;
+  do {
+    PORTC |= 0b00000010;
+    asm("wdr");
+#ifdef S_DEBUG
+    Serial.println("Scan tag");
+    Serial.flush();
+#endif
+    /* Check new card */
+    while (!rfid.PICC_IsNewCardPresent());
+    while (!rfid.PICC_ReadCardSerial());
+    RC522::PICC_Type piccType = rfid.PICC_GetType(rfid.uid.sak);
+    PORTC &= !0b00000010;
+
+    switch (piccType) {
+      case RC522::PICC_TYPE_MIFARE_UL:
+      case RC522::PICC_TYPE_MIFARE_PLUS:
+      case RC522::PICC_TYPE_MIFARE_DESFIRE:
+      case RC522::PICC_TYPE_MIFARE_4K:
+      case RC522::PICC_TYPE_MIFARE_MINI: //I dare you to use this one
+        tokencap = 0;
+      default: continue;
+      case RC522::PICC_TYPE_MIFARE_1K:
+        tokencap = 64; break;
+    }
+
+    if (tokencap == 0) {
+#ifdef S_DEBUG
+      Serial.println("Not supported");
+#endif
+      return;
+    }
+
+    rfid.PCD_Authenticate(RC522::PICC_CMD_MF_AUTH_KEY_A, 1, &key, &(rfid.uid));
+    rfid.MIFARE_Read(1, buffer, &len);
+
+    if (buffer[0] - 1 != currentPart) {
+#ifdef S_DEBUG
+      Serial.print("Wrong part: ");
+      Serial.print(buffer[0]);
+      Serial.print(" != ");
+      Serial.println(currentPart + 1);
+#endif
+      rfid.PICC_HaltA();
+      rfid.PCD_StopCrypto1();
       continue;
     }
 
-    uint8_t buffer[18];
-    byte len = 18;
-
-    rfid.PCD_Authenticate(RC522::PICC_CMD_MF_AUTH_KEY_A, block, &key, &(rfid.uid));
-    rfid.MIFARE_Read(block, buffer, &len);
-
-    /*
-      2 bytes - code size
-      1 byte - parts [token]
-      1 byte - full pages (including not full)
-      1 byte - amount of data in last page
-      1 byte - full blocks
-      1 byte - amount of data in last block
-    */
-    if (block == 1) {
+    if (!metaRead && currentPart == 0) {
+      /*
+        2 bytes - code size
+        2 bytes - full blocks
+        1 byte - pages (unused)
+        1 byte - parts [tokens]
+      */
       siz = word(buffer[1], buffer[2]);
-      blocks = word(buffer[3], buffer[4]) + 2;
-      pages = buffer[5];
+      blocks = word(buffer[3], buffer[4]);
       parts = buffer[6];
 #ifdef S_DEBUG
       Serial.print(F("Sketch size:\t"));
       Serial.print(siz);
       Serial.print(F(" bytes\r\nParts [tokens]:\t"));
       Serial.println(parts);
-      Serial.print(F("Pages total:\t"));
-      Serial.println(pages);
       Serial.print(F("Blocks total:\t"));
-      Serial.println(blocks - 2);
+      Serial.println(blocks);
       Serial.flush();
 #endif
-      continue;
+      metaRead = true;
     }
 
-    for (uint8_t a = 0; a < 16; a++) {
-      pageBuffer[(pageoffset * 16) + a] = buffer[a];
-    }
-    pageoffset++;
-
-    /* Check if page is full */
-    if (pageoffset < 16 && block != blocks - 1) continue;
-    pageoffset = 0;
-
+    for (uint8_t a = 2;
+         a < tokencap && blocksWritten != blocks;
+         a++) {
+      asm("wdr");
+      if ((a + 1) % 4 == 0) continue;
 #ifdef S_DEBUG
-    Serial.print(F("\r\n ---- Page "));
-    Serial.print(memptr + 1);
-    Serial.println(F(" ----"));
-    for (uint16_t x = 1; x <= 256; x++) {
-      Serial.print(pageBuffer[x - 1] < 0x10 ? " 0" : " ");
-      Serial.print(pageBuffer[x - 1], HEX);
-      if (x % 16 == 0)
-        Serial.println();
+      Serial.print(a);
+      Serial.print('\t');
+#endif
+      rfid.PCD_Authenticate(RC522::PICC_CMD_MF_AUTH_KEY_A, a, &key, &(rfid.uid));
+      rfid.MIFARE_Read(a, buffer, &len);
+      for (uint16_t x = 0; x < 16; x++)
+        writeBuffer[x] = buffer[x];
+
+      PORTC |= 0b00000010;
+      boot_program_page(memptr, writeBuffer);
+      blocksWritten += 1;
+      memptr += 16;
     }
-    Serial.flush();
+
+    rfid.PICC_HaltA();
+    rfid.PCD_StopCrypto1();
+
+    currentPart += 1;
+  } while (currentPart <= parts && blocksWritten != blocks);
+  PORTC |= 0b00000010;
+#ifdef S_DEBUG
+  Serial.println("Done!");
+  Serial.flush();
 #endif
 
-    /* Write each page to flash */
-    digitalWrite(A1, HIGH);
-    boot_program_page(memptr, pageBuffer);
-
-    /* Finished writing to flash */
-    memptr += 256;
-    memset(pageBuffer, 0xFF, 256);
-  }
-  rfid.PICC_HaltA();
-  rfid.PCD_StopCrypto1(); // Stop encryption on PCD
+  /* We're done here */
   rfid.PCD_AntennaOff();
-
-  digitalWrite(A1, LOW);
   watchdogConfig(_BV(WDE)); //16ms
+  PORTC &= !0b00000010;
   while (1); //Trigger watchdog to jump to code
 }
 
-void boot_program_page(uint32_t page, uint8_t *buf) {
-  uint16_t i;
+void boot_program_page(uint16_t addr, uint8_t *buf) {
+#ifdef S_DEBUG
+  Serial.print("Writing at: ");
+  Serial.println(addr);
+  Serial.print('\t');
+  for (uint16_t x = 0; x < 16; x++) {
+    Serial.print(buf[x] < 0x10 ? " 0" : " ");
+    Serial.print(buf[x], HEX);
+  }
+  Serial.println();
+  Serial.flush();
+#endif
   uint8_t sreg;
 
   sreg = SREG;
@@ -167,29 +207,39 @@ void boot_program_page(uint32_t page, uint8_t *buf) {
 
   eeprom_busy_wait();
 
-  boot_page_erase(page);
+  if (addr == 0 || addr % SPM_PAGESIZE == 0)
+    boot_page_erase(addr);
   boot_spm_busy_wait();
-  for (i = 0; i < SPM_PAGESIZE; i += 2)
+  for (uint8_t i = 0; i < 16; i += 2)
   {
     uint16_t w = *buf++;
     w += (*buf++) << 8;
-    boot_page_fill(page + i, w);
+    boot_page_fill(addr + i, w);
   }
 
-  boot_page_write(page); // Store buffer in flash page.
-  boot_spm_busy_wait(); // Wait until the memory is written.
-
-  // Reenable RWW-section again. We need this if we want to jump back
-  // to the application after bootloading.
+  boot_page_write(addr);
+  boot_spm_busy_wait();
   boot_rww_enable();
 
-  // Re-enable interrupts (if they were ever enabled).
   SREG = sreg;
 }
 
 void watchdogConfig(uint8_t x) {
   WDTCSR = _BV(WDCE) | _BV(WDE);
   WDTCSR = x;
+}
+
+void initSPI() {
+  uint8_t sreg = SREG;
+  cli();
+
+  /* Set up SPI outs */
+  DDRB |= 0b101100;
+  /* SPI in */
+  DDRB &= 0b101111;
+
+  SPCR |= _BV(MSTR) | _BV(SPE);
+  SREG = sreg;
 }
 
 void loop() {

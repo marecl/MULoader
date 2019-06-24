@@ -1,13 +1,12 @@
 #ifndef RC522_h
 #define RC522_h
-#include <SPI.h>
-#ifndef RC522_SPICLOCK
-#define RC522_SPICLOCK SPI_CLOCK_DIV4
-#endif
+#include <avr/io.h>
+#define sei()  __asm__ __volatile__ ("sei" ::)
+#define cli()  __asm__ __volatile__ ("cli" ::)
 
 class RC522 {
   public:
-    enum PCD_Register : byte {
+    enum PCD_Register : uint8_t {
       CommandReg = 0x01 << 1,
       ComIEnReg = 0x02 << 1,
       DivIEnReg = 0x03 << 1,
@@ -60,7 +59,7 @@ class RC522 {
       TestADCReg = 0x3B << 1
     };
 
-    enum PCD_Command : byte {
+    enum PCD_Command : uint8_t {
       PCD_Idle = 0x00,
       PCD_Mem = 0x01,
       PCD_GenerateRandomID = 0x02,
@@ -73,7 +72,7 @@ class RC522 {
       PCD_SoftReset = 0x0F
     };
 
-    enum PICC_Command : byte {
+    enum PICC_Command : uint8_t {
       PICC_CMD_REQA = 0x26,
       PICC_CMD_WUPA = 0x52,
       PICC_CMD_CT = 0x88,
@@ -93,12 +92,21 @@ class RC522 {
       PICC_CMD_UL_WRITE = 0xA2
     };
 
-    enum MIFARE_Misc {
-      MF_ACK = 0xA,
-      MF_KEY_SIZE = 6
+    enum PICC_Type : uint8_t {
+      PICC_TYPE_UNKNOWN,
+      PICC_TYPE_ISO_14443_4,
+      PICC_TYPE_ISO_18092,
+      PICC_TYPE_MIFARE_MINI,
+      PICC_TYPE_MIFARE_1K,
+      PICC_TYPE_MIFARE_4K,
+      PICC_TYPE_MIFARE_UL,
+      PICC_TYPE_MIFARE_PLUS,
+      PICC_TYPE_MIFARE_DESFIRE,
+      PICC_TYPE_TNP3XXX,
+      PICC_TYPE_NOT_COMPLETE  = 0xff
     };
 
-    enum StatusCode : byte {
+    enum StatusCode : uint8_t {
       STATUS_OK ,
       STATUS_ERROR ,
       STATUS_COLLISION ,
@@ -109,40 +117,50 @@ class RC522 {
       STATUS_CRC_WRONG ,
       STATUS_MIFARE_NACK = 0xff
     };
-    typedef struct {
-      byte size;
-      byte uidByte[10];
-      byte sak;
-    } Uid;
-    typedef struct {
-      byte keyByte[MF_KEY_SIZE];
-    } MIFARE_Key;
-    Uid uid;
-    RC522(byte chipSelectPin);
-    void PCD_WriteRegister(PCD_Register reg, byte value);
-    void PCD_WriteRegister(PCD_Register reg, byte count, byte *values);
-    byte PCD_ReadRegister(PCD_Register reg);
-    void PCD_ReadRegister(PCD_Register reg, byte count, byte *values, byte rxAlign = 0);
 
-    void PCD_SetRegisterBitMask(PCD_Register reg, byte mask);
-    void PCD_ClearRegisterBitMask(PCD_Register reg, byte mask);
-    StatusCode PCD_CalculateCRC(byte *data, byte length, byte *result);
+    typedef struct {
+      uint8_t size;
+      uint8_t uiduint8_t[10];
+      uint8_t sak;
+    } Uid;
+
+    typedef struct {
+      uint8_t keyuint8_t[6];
+    } MIFARE_Key;
+
+    Uid uid;
+    RC522();
+
+    /* SPI Toolkit */
+    void select(bool);
+    void beginTransaction() __attribute__((__always_inline__));
+    uint8_t transfer(uint8_t);
+    void endTransaction();
+
+    static PICC_Type PICC_GetType(uint8_t);
+
+    void PCD_WriteRegister(PCD_Register reg, uint8_t value);
+    void PCD_WriteRegister(PCD_Register reg, uint8_t count, uint8_t *values);
+    uint8_t PCD_ReadRegister(PCD_Register reg);
+    void PCD_ReadRegister(PCD_Register reg, uint8_t count, uint8_t *values, uint8_t rxAlign = 0);
+
+    void PCD_SetRegisterBitMask(PCD_Register reg, uint8_t mask);
+    void PCD_ClearRegisterBitMask(PCD_Register reg, uint8_t mask);
+    StatusCode PCD_CalculateCRC(uint8_t *data, uint8_t length, uint8_t *result);
     void PCD_Init();
     void PCD_AntennaOff();
     void PCD_SoftPowerDown();
-    StatusCode PCD_TransceiveData(byte *sendData, byte sendLen, byte *backData, byte *backLen, byte *validBits = nullptr, byte rxAlign = 0, bool checkCRC = false);
-    StatusCode PCD_CommunicateWithPICC(byte command, byte waitIRq, byte *sendData, byte sendLen, byte *backData = nullptr, byte *backLen = nullptr, byte *validBits = nullptr, byte rxAlign = 0, bool checkCRC = false);
-    StatusCode PICC_RequestA(byte *bufferATQA, byte *bufferSize);
-    StatusCode PICC_WakeupA(byte *bufferATQA, byte *bufferSize);
-    StatusCode PICC_REQA_or_WUPA(byte command, byte *bufferATQA, byte *bufferSize);
-    virtual StatusCode PICC_Select(Uid *uid, byte validBits = 0);
+    StatusCode PCD_TransceiveData(uint8_t *sendData, uint8_t sendLen, uint8_t *backData, uint8_t *backLen, uint8_t *validBits = nullptr, uint8_t rxAlign = 0, bool checkCRC = false);
+    StatusCode PCD_CommunicateWithPICC(uint8_t command, uint8_t waitIRq, uint8_t *sendData, uint8_t sendLen, uint8_t *backData = nullptr, uint8_t *backLen = nullptr, uint8_t *validBits = nullptr, uint8_t rxAlign = 0, bool checkCRC = false);
+    StatusCode PICC_RequestA(uint8_t *bufferATQA, uint8_t *bufferSize);
+    StatusCode PICC_WakeupA(uint8_t *bufferATQA, uint8_t *bufferSize);
+    StatusCode PICC_REQA_or_WUPA(uint8_t command, uint8_t *bufferATQA, uint8_t *bufferSize);
+    virtual StatusCode PICC_Select(Uid *uid, uint8_t validBits = 0);
     StatusCode PICC_HaltA();
-    StatusCode PCD_Authenticate(byte command, byte blockAddr, MIFARE_Key *key, Uid *uid);
+    StatusCode PCD_Authenticate(uint8_t command, uint8_t blockAddr, MIFARE_Key *key, Uid *uid);
     void PCD_StopCrypto1();
-    StatusCode MIFARE_Read(byte blockAddr, byte *buffer, byte *bufferSize);
+    StatusCode MIFARE_Read(uint8_t blockAddr, uint8_t *buffer, uint8_t *bufferSize);
     virtual bool PICC_IsNewCardPresent();
     virtual bool PICC_ReadCardSerial();
-  protected:
-    byte _chipSelectPin;
 };
 #endif

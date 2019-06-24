@@ -1,86 +1,133 @@
-#include <Arduino.h>
 #include "RC522.h"
 
-RC522::RC522(byte chipSelectPin) {
-  _chipSelectPin = chipSelectPin;
+RC522::RC522() {
+  this->select(false);
 }
 
-void RC522::PCD_WriteRegister(PCD_Register reg, byte value) {
-  SPI.beginTransaction(SPISettings(RC522_SPICLOCK, MSBFIRST, SPI_MODE0));
-  digitalWrite(_chipSelectPin, LOW);
-  SPI.transfer(reg);
-  SPI.transfer(value);
-  digitalWrite(_chipSelectPin, HIGH);
-  SPI.endTransaction();
+/* Chip Select on D10 */
+void RC522::select(bool on) {
+  if (!on) PORTB |= 0b000100;
+  else PORTB &= 0b111011;
 }
 
-void RC522::PCD_WriteRegister(PCD_Register reg, byte count, byte *values) {
-  SPI.beginTransaction(SPISettings(RC522_SPICLOCK, MSBFIRST, SPI_MODE0));
-  digitalWrite(_chipSelectPin, LOW);
-  SPI.transfer(reg);
-  for (byte index = 0; index < count; index++) {
-    SPI.transfer(values[index]);
+void RC522::beginTransaction() {
+  /*
+    SPISettings in a nutshell:
+    Clock: 4MHz
+    MSBFIRST
+    SPI_MODE0
+  */
+  SPCR = _BV(SPE) | _BV(MSTR);
+  SPSR = 0x00;
+}
+
+uint8_t RC522::transfer(uint8_t data) {
+  SPDR = data;
+  asm volatile("nop");
+  while (!(SPSR & _BV(SPIF)));
+  return SPDR;
+}
+
+void RC522::endTransaction() {
+  uint8_t sreg = SREG;
+  cli();
+  SPCR &= ~_BV(SPE);
+  SREG = sreg;
+}
+
+RC522::PICC_Type RC522::PICC_GetType(uint8_t sak) {
+  sak &= 0x7F;
+  switch (sak) {
+    case 0x04: return PICC_TYPE_NOT_COMPLETE;
+    case 0x09: return PICC_TYPE_MIFARE_MINI;
+    case 0x08: return PICC_TYPE_MIFARE_1K;
+    case 0x18: return PICC_TYPE_MIFARE_4K;
+    case 0x00: return PICC_TYPE_MIFARE_UL;
+    case 0x10:
+    case 0x11: return PICC_TYPE_MIFARE_PLUS;
+    case 0x01: return PICC_TYPE_TNP3XXX;
+    case 0x20: return PICC_TYPE_ISO_14443_4;
+    case 0x40: return PICC_TYPE_ISO_18092;
+    default: return PICC_TYPE_UNKNOWN;
   }
-  digitalWrite(_chipSelectPin, HIGH);
-  SPI.endTransaction();
 }
 
-byte RC522::PCD_ReadRegister(PCD_Register reg) {
-  byte value;
-  SPI.beginTransaction(SPISettings(RC522_SPICLOCK, MSBFIRST, SPI_MODE0));
-  digitalWrite(_chipSelectPin, LOW);
-  SPI.transfer(0x80 | reg);
-  value = SPI.transfer(0);
-  digitalWrite(_chipSelectPin, HIGH);
-  SPI.endTransaction();
+void RC522::PCD_WriteRegister(PCD_Register reg, uint8_t value) {
+  this->beginTransaction();
+  this->select(true);
+  this->transfer(reg);
+  this->transfer(value);
+  this->select(false);
+  this->endTransaction();
+}
+
+void RC522::PCD_WriteRegister(PCD_Register reg, uint8_t count, uint8_t *values) {
+  this->beginTransaction();
+  this->select(true);
+  this->transfer(reg);
+  for (uint8_t index = 0; index < count; index++) {
+    this->transfer(values[index]);
+  }
+  this->select(false);
+  this->endTransaction();
+}
+
+uint8_t RC522::PCD_ReadRegister(PCD_Register reg) {
+  uint8_t value;
+  this->beginTransaction();
+  this->select(true);
+  this->transfer(0x80 | reg);
+  value = this->transfer(0);
+  this->select(false);
+  this->endTransaction();
   return value;
 }
 
-void RC522::PCD_ReadRegister(PCD_Register reg, byte count, byte *values, byte rxAlign) {
+void RC522::PCD_ReadRegister(PCD_Register reg, uint8_t count, uint8_t *values, uint8_t rxAlign) {
   if (count == 0)
     return;
 
-  byte address = 0x80 | reg;
-  byte index = 0;
-  SPI.beginTransaction(SPISettings(RC522_SPICLOCK, MSBFIRST, SPI_MODE0));
-  digitalWrite(_chipSelectPin, LOW);
+  uint8_t address = 0x80 | reg;
+  uint8_t index = 0;
+  this->beginTransaction();
+  this->select(true);
   count--;
-  SPI.transfer(address);
+  this->transfer(address);
   if (rxAlign) {
-    byte mask = (0xFF << rxAlign) & 0xFF;
-    byte value = SPI.transfer(address);
+    uint8_t mask = (0xFF << rxAlign) & 0xFF;
+    uint8_t value = this->transfer(address);
     values[0] = (values[0] & ~mask) | (value & mask);
     index++;
   }
   while (index < count) {
-    values[index] = SPI.transfer(address);
+    values[index] = this->transfer(address);
     index++;
   }
-  values[index] = SPI.transfer(0);
-  digitalWrite(_chipSelectPin, HIGH);
-  SPI.endTransaction();
+  values[index] = this->transfer(0);
+  this->select(false);
+  this->endTransaction();
 }
 
-void RC522::PCD_SetRegisterBitMask(PCD_Register reg, byte mask) {
-  byte tmp;
+void RC522::PCD_SetRegisterBitMask(PCD_Register reg, uint8_t mask) {
+  uint8_t tmp;
   tmp = PCD_ReadRegister(reg);
   PCD_WriteRegister(reg, tmp | mask);
 }
 
-void RC522::PCD_ClearRegisterBitMask(PCD_Register reg, byte mask) {
-  byte tmp;
+void RC522::PCD_ClearRegisterBitMask(PCD_Register reg, uint8_t mask) {
+  uint8_t tmp;
   tmp = PCD_ReadRegister(reg);
   PCD_WriteRegister(reg, tmp & (~mask));
 }
 
-RC522::StatusCode RC522::PCD_CalculateCRC(byte *data, byte length, byte *result) {
+RC522::StatusCode RC522::PCD_CalculateCRC(uint8_t *data, uint8_t length, uint8_t *result) {
   PCD_WriteRegister(CommandReg, PCD_Idle);
   PCD_WriteRegister(DivIrqReg, 0x04);
   PCD_WriteRegister(FIFOLevelReg, 0x80);
   PCD_WriteRegister(FIFODataReg, length, data);
   PCD_WriteRegister(CommandReg, PCD_CalcCRC);
   for (uint16_t i = 5000; i > 0; i--) {
-    byte n = PCD_ReadRegister(DivIrqReg);
+    uint8_t n = PCD_ReadRegister(DivIrqReg);
     if (n & 0x04) {
       PCD_WriteRegister(CommandReg, PCD_Idle);
       result[0] = PCD_ReadRegister(CRCResultRegL);
@@ -92,8 +139,7 @@ RC522::StatusCode RC522::PCD_CalculateCRC(byte *data, byte length, byte *result)
 }
 
 void RC522::PCD_Init() {
-  pinMode(_chipSelectPin, OUTPUT);
-  digitalWrite(_chipSelectPin, HIGH);
+  this->select(false);
 
   /* Reader is wired to RESET line, so we can start config now */
 
@@ -108,7 +154,7 @@ void RC522::PCD_Init() {
   PCD_WriteRegister(ModeReg, 0x3D);
 
   /* Antenna On */
-  byte value = PCD_ReadRegister(TxControlReg);
+  uint8_t value = PCD_ReadRegister(TxControlReg);
   if ((value & 0x03) != 0x03) {
     PCD_WriteRegister(TxControlReg, value | 0x03);
   }
@@ -119,33 +165,33 @@ void RC522::PCD_AntennaOff() {
 }
 
 void RC522::PCD_SoftPowerDown() {
-  byte val = PCD_ReadRegister(CommandReg);
+  uint8_t val = PCD_ReadRegister(CommandReg);
   val |= (1 << 4);
   PCD_WriteRegister(CommandReg, val);
 }
 
-RC522::StatusCode RC522::PCD_TransceiveData(byte *sendData,
-    byte sendLen,
-    byte *backData,
-    byte *backLen,
-    byte *validBits,
-    byte rxAlign,
+RC522::StatusCode RC522::PCD_TransceiveData(uint8_t *sendData,
+    uint8_t sendLen,
+    uint8_t *backData,
+    uint8_t *backLen,
+    uint8_t *validBits,
+    uint8_t rxAlign,
     bool checkCRC) {
-  byte waitIRq = 0x30;
+  uint8_t waitIRq = 0x30;
   return PCD_CommunicateWithPICC(PCD_Transceive, waitIRq, sendData, sendLen, backData, backLen, validBits, rxAlign, checkCRC);
 }
 
-RC522::StatusCode RC522::PCD_CommunicateWithPICC(byte command,
-    byte waitIRq,
-    byte *sendData,
-    byte sendLen,
-    byte *backData,
-    byte *backLen,
-    byte *validBits,
-    byte rxAlign,
+RC522::StatusCode RC522::PCD_CommunicateWithPICC(uint8_t command,
+    uint8_t waitIRq,
+    uint8_t *sendData,
+    uint8_t sendLen,
+    uint8_t *backData,
+    uint8_t *backLen,
+    uint8_t *validBits,
+    uint8_t rxAlign,
     bool checkCRC) {
-  byte txLastBits = validBits ? *validBits : 0;
-  byte bitFraming = (rxAlign << 4) + txLastBits;
+  uint8_t txLastBits = validBits ? *validBits : 0;
+  uint8_t bitFraming = (rxAlign << 4) + txLastBits;
   PCD_WriteRegister(CommandReg, PCD_Idle);
   PCD_WriteRegister(ComIrqReg, 0x7F);
   PCD_WriteRegister(FIFOLevelReg, 0x80);
@@ -157,7 +203,7 @@ RC522::StatusCode RC522::PCD_CommunicateWithPICC(byte command,
   }
   uint16_t i;
   for (i = 2000; i > 0; i--) {
-    byte n = PCD_ReadRegister(ComIrqReg);
+    uint8_t n = PCD_ReadRegister(ComIrqReg);
     if (n & waitIRq) {
       break;
     }
@@ -168,13 +214,13 @@ RC522::StatusCode RC522::PCD_CommunicateWithPICC(byte command,
   if (i == 0) {
     return STATUS_TIMEOUT;
   }
-  byte errorRegValue = PCD_ReadRegister(ErrorReg);
+  uint8_t errorRegValue = PCD_ReadRegister(ErrorReg);
   if (errorRegValue & 0x13) {
     return STATUS_ERROR;
   }
-  byte _validBits = 0;
+  uint8_t _validBits = 0;
   if (backData && backLen) {
-    byte n = PCD_ReadRegister(FIFOLevelReg);
+    uint8_t n = PCD_ReadRegister(FIFOLevelReg);
     if (n > *backLen) {
       return STATUS_NO_ROOM;
     }
@@ -195,7 +241,7 @@ RC522::StatusCode RC522::PCD_CommunicateWithPICC(byte command,
     if (*backLen < 2 || _validBits != 0) {
       return STATUS_CRC_WRONG;
     }
-    byte controlBuffer[2];
+    uint8_t controlBuffer[2];
     RC522::StatusCode status = PCD_CalculateCRC(&backData[0], *backLen - 2, &controlBuffer[0]);
     if (status != STATUS_OK) {
       return status;
@@ -207,16 +253,16 @@ RC522::StatusCode RC522::PCD_CommunicateWithPICC(byte command,
   return STATUS_OK;
 }
 
-RC522::StatusCode RC522::PICC_RequestA(byte *bufferATQA, byte *bufferSize) {
+RC522::StatusCode RC522::PICC_RequestA(uint8_t *bufferATQA, uint8_t *bufferSize) {
   return PICC_REQA_or_WUPA(PICC_CMD_REQA, bufferATQA, bufferSize);
 }
 
-RC522::StatusCode RC522::PICC_WakeupA(byte *bufferATQA, byte *bufferSize) {
+RC522::StatusCode RC522::PICC_WakeupA(uint8_t *bufferATQA, uint8_t *bufferSize) {
   return PICC_REQA_or_WUPA(PICC_CMD_WUPA, bufferATQA, bufferSize);
 }
 
-RC522::StatusCode RC522::PICC_REQA_or_WUPA(byte command, byte *bufferATQA, byte *bufferSize) {
-  byte validBits;
+RC522::StatusCode RC522::PICC_REQA_or_WUPA(uint8_t command, uint8_t *bufferATQA, uint8_t *bufferSize) {
+  uint8_t validBits;
   RC522::StatusCode status;
   if (bufferATQA == nullptr || *bufferSize < 2)
     return STATUS_NO_ROOM;
@@ -233,23 +279,23 @@ RC522::StatusCode RC522::PICC_REQA_or_WUPA(byte command, byte *bufferATQA, byte 
   return STATUS_OK;
 }
 
-RC522::StatusCode RC522::PICC_Select(Uid *uid, byte validBits) {
+RC522::StatusCode RC522::PICC_Select(Uid *uid, uint8_t validBits) {
   bool uidComplete;
   bool selectDone;
   bool useCascadeTag;
-  byte cascadeLevel = 1;
+  uint8_t cascadeLevel = 1;
   RC522::StatusCode result;
-  byte count;
-  byte checkBit;
-  byte index;
-  byte uidIndex;
+  uint8_t count;
+  uint8_t checkBit;
+  uint8_t index;
+  uint8_t uidIndex;
   int8_t currentLevelKnownBits;
-  byte buffer[9];
-  byte bufferUsed;
-  byte rxAlign;
-  byte txLastBits;
-  byte *responseBuffer;
-  byte responseLength;
+  uint8_t buffer[9];
+  uint8_t bufferUsed;
+  uint8_t rxAlign;
+  uint8_t txLastBits;
+  uint8_t *responseBuffer;
+  uint8_t responseLength;
   if (validBits > 80) {
     return STATUS_INVALID;
   }
@@ -284,14 +330,14 @@ RC522::StatusCode RC522::PICC_Select(Uid *uid, byte validBits) {
     if (useCascadeTag) {
       buffer[index++] = PICC_CMD_CT;
     }
-    byte bytesToCopy = currentLevelKnownBits / 8 + (currentLevelKnownBits % 8 ? 1 : 0);
-    if (bytesToCopy) {
-      byte maxBytes = useCascadeTag ? 3 : 4;
-      if (bytesToCopy > maxBytes) {
-        bytesToCopy = maxBytes;
+    uint8_t uint8_tsToCopy = currentLevelKnownBits / 8 + (currentLevelKnownBits % 8 ? 1 : 0);
+    if (uint8_tsToCopy) {
+      uint8_t maxuint8_ts = useCascadeTag ? 3 : 4;
+      if (uint8_tsToCopy > maxuint8_ts) {
+        uint8_tsToCopy = maxuint8_ts;
       }
-      for (count = 0; count < bytesToCopy; count++) {
-        buffer[index++] = uid->uidByte[uidIndex + count];
+      for (count = 0; count < uint8_tsToCopy; count++) {
+        buffer[index++] = uid->uiduint8_t[uidIndex + count];
       }
     }
     if (useCascadeTag) {
@@ -324,11 +370,11 @@ RC522::StatusCode RC522::PICC_Select(Uid *uid, byte validBits) {
       PCD_WriteRegister(BitFramingReg, (rxAlign << 4) + txLastBits);
       result = PCD_TransceiveData(buffer, bufferUsed, responseBuffer, &responseLength, &txLastBits, rxAlign);
       if (result == STATUS_COLLISION) {
-        byte valueOfCollReg = PCD_ReadRegister(CollReg);
+        uint8_t valueOfCollReg = PCD_ReadRegister(CollReg);
         if (valueOfCollReg & 0x20) {
           return STATUS_COLLISION;
         }
-        byte collisionPos = valueOfCollReg & 0x1F;
+        uint8_t collisionPos = valueOfCollReg & 0x1F;
         if (collisionPos == 0) {
           collisionPos = 32;
         }
@@ -354,9 +400,9 @@ RC522::StatusCode RC522::PICC_Select(Uid *uid, byte validBits) {
       }
     }
     index = (buffer[2] == PICC_CMD_CT) ? 3 : 2;
-    bytesToCopy = (buffer[2] == PICC_CMD_CT) ? 3 : 4;
-    for (count = 0; count < bytesToCopy; count++) {
-      uid->uidByte[uidIndex + count] = buffer[index++];
+    uint8_tsToCopy = (buffer[2] == PICC_CMD_CT) ? 3 : 4;
+    for (count = 0; count < uint8_tsToCopy; count++) {
+      uid->uiduint8_t[uidIndex + count] = buffer[index++];
     }
     if (responseLength != 3 || txLastBits != 0) {
       return STATUS_ERROR;
@@ -382,7 +428,7 @@ RC522::StatusCode RC522::PICC_Select(Uid *uid, byte validBits) {
 
 RC522::StatusCode RC522::PICC_HaltA() {
   RC522::StatusCode result;
-  byte buffer[4];
+  uint8_t buffer[4];
   buffer[0] = PICC_CMD_HLTA;
   buffer[1] = 0;
   result = PCD_CalculateCRC(buffer, 2, &buffer[2]);
@@ -399,16 +445,16 @@ RC522::StatusCode RC522::PICC_HaltA() {
   return result;
 }
 
-RC522::StatusCode RC522::PCD_Authenticate(byte command, byte blockAddr, MIFARE_Key *key, Uid *uid) {
-  byte waitIRq = 0x10;
-  byte sendData[12];
+RC522::StatusCode RC522::PCD_Authenticate(uint8_t command, uint8_t blockAddr, MIFARE_Key *key, Uid *uid) {
+  uint8_t waitIRq = 0x10;
+  uint8_t sendData[12];
   sendData[0] = command;
   sendData[1] = blockAddr;
-  for (byte i = 0; i < MF_KEY_SIZE; i++) {
-    sendData[2 + i] = key->keyByte[i];
+  for (uint8_t i = 0; i < 6; i++) {
+    sendData[2 + i] = key->keyuint8_t[i];
   }
-  for (byte i = 0; i < 4; i++) {
-    sendData[8 + i] = uid->uidByte[i + uid->size - 4];
+  for (uint8_t i = 0; i < 4; i++) {
+    sendData[8 + i] = uid->uiduint8_t[i + uid->size - 4];
   }
   return PCD_CommunicateWithPICC(PCD_MFAuthent, waitIRq, &sendData[0], sizeof(sendData));
 }
@@ -417,7 +463,7 @@ void RC522::PCD_StopCrypto1() {
   PCD_ClearRegisterBitMask(Status2Reg, 0x08);
 }
 
-RC522::StatusCode RC522::MIFARE_Read(byte blockAddr, byte *buffer, byte *bufferSize) {
+RC522::StatusCode RC522::MIFARE_Read(uint8_t blockAddr, uint8_t *buffer, uint8_t *bufferSize) {
   RC522::StatusCode result;
   if (buffer == nullptr || *bufferSize < 18) {
     return STATUS_NO_ROOM;
@@ -432,8 +478,8 @@ RC522::StatusCode RC522::MIFARE_Read(byte blockAddr, byte *buffer, byte *bufferS
 }
 
 bool RC522::PICC_IsNewCardPresent() {
-  byte bufferATQA[2];
-  byte bufferSize = sizeof(bufferATQA);
+  uint8_t bufferATQA[2];
+  uint8_t bufferSize = sizeof(bufferATQA);
   PCD_WriteRegister(TxModeReg, 0x00);
   PCD_WriteRegister(RxModeReg, 0x00);
   PCD_WriteRegister(ModWidthReg, 0x26);
