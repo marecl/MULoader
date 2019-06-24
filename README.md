@@ -17,7 +17,7 @@ These tags have special memory blocks, that define access conditions to whole se
 It's not end yet, block #0 is *NOT* meant for data storage, so all in all, instead of 1k (64 blocks * 16 bytes) we get 47 blocks (752 bytes).  
 During development I decided to take away one more block for sketch metadata (number of parts, code size etc) so we end up with 736 bytes of storage available per 1k tag (also it makes code a bit smaller, yay!).  
 
-Full 28672 byte code (in the worst case) will take up to 40 tags. Don't forget, that they will have to be scanned in specific order or your uC will crash at some point.  
+Full 28672 byte code (in the worst case) will take up to 40 tags. Don't forget, that they will have to be scanned in specific order or your uC may crash at some point.  
 I don't know why, but millis() is not working ¯\_(ツ)_/¯
 
 Also, I didn't have any experience in working with AVR bootloaders nor RFID tags.
@@ -54,7 +54,7 @@ Fuse bits:
 
 Reset circuit like this allowed to slim code a bit and as far as I see causes no problems so... It's working?  
 I added an LED on A1 to watch if flash is being updated.  
-Test code lights up LED on A0.  
+Test code lights up/blinks LED on A0.  
 
 ### Software
 Python 2.7 and pySerial are required.  
@@ -71,8 +71,9 @@ During uploading there will be hex dump of code. Any errors will be easily visib
 #### Reader
 1. Copy platform.local.txt to arduino/hardware/avr/[version] (remember to use it only with Reader)
 2. Upload MULoaderReader to target
-3. Scan tag and watch stuff appearing in Serial Monitor
+3. Scan tags in their respectful order
 
+You can omit first step if you only want to watch stuff.  
 Remember to uncomment define at the beginning of Reader code, otherwise you won't see anything :)
 
 ### Tag memory layout (MIFARE 1K)
@@ -80,14 +81,8 @@ Every tag will have 46 blocks available. It makes programming easier (fixed amou
 First tag: part number, code size, amount of blocks and pages and parts.  
 Every next tag: part number only.  
 
-### What works
-* Uploading code to tags
-* Reading from tag (one)
-* Updating flash
-
-### What doesn't work
-* No checksum (idea: literally sum of all elements in blocks in all sectors. Overflow will be checksum)
+### ToDo list
+* Checksum (idea: literally sum of all elements in blocks in all sectors. Overflow will be checksum)
 * Intel HEX files as input
-* Bootloader timeout
 * Tags other than Mifare Classic 1K (too expensive, don't have any yet)
-* Writer: RESET must be connected to D9, otherwise it may not detect tags
+* Debug branch with LEDs and stuff to winker around
